@@ -1,5 +1,11 @@
 __pycache__/
 dataset/
+dataset2/
+coco_caption/
 coco_utils.py
 *.json
 *~
+*.hdf5
+__init__.py
+*.pt
+*.log
