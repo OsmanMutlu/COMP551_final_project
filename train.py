@@ -1,7 +1,5 @@
-# As usual, a bit of setup
 import time, os, json
 import numpy as np
-# import matplotlib.pyplot as plt
 import pandas as pd
 
 import torch
@@ -10,6 +8,8 @@ from model import TransformerModel, TransformerModel2
 import h5py
 from nltk.translate.bleu_score import sentence_bleu
 from nltk.translate.meteor_score import meteor_score
+
+from optim import BertAdam
 
 import ipdb
 
@@ -25,59 +25,12 @@ import ipdb
 # # free to experiment with the original features by changing the flag below.
 # data = load_coco_data(pca_features=True)
 
-# # Print out all the keys and values from the data dictionary
-# for k, v in data.items():
-#     if type(v) == np.ndarray:
-#         print(k, type(v), v.shape, v.dtype)
-#     else:
-#         print(k, type(v), len(v))
 
 # trn = pd.DataFrame([{"id":data["train_image_idxs"][i], "captions":data["train_captions"][i,:], "features":data["train_features"][data["train_image_idxs"][i],:]} for i in range(len(data["train_image_idxs"]))])
 # val = pd.DataFrame([{"id":data["val_image_idxs"][i], "captions":data["val_captions"][i,:], "features":data["val_features"][data["val_image_idxs"][i],:]} for i in range(len(data["val_image_idxs"]))])
 
 # trn.to_json("train.json", orient="records", lines=True, force_ascii=False)
 # val.to_json("val.json", orient="records", lines=True, force_ascii=False)
-
-# outputs ->
-# val_captions <class 'numpy.ndarray'> (195954, 17) int32
-# train_urls <class 'numpy.ndarray'> (82783,) <U63
-# val_features <class 'numpy.ndarray'> (40504, 512) float32
-# train_captions <class 'numpy.ndarray'> (400135, 17) int32
-# train_image_idxs <class 'numpy.ndarray'> (400135,) int32
-# idx_to_word <class 'list'> 1004
-# word_to_idx <class 'dict'> 1004
-# val_urls <class 'numpy.ndarray'> (40504,) <U63
-# train_features <class 'numpy.ndarray'> (82783, 512) float32
-# val_image_idxs <class 'numpy.ndarray'> (195954,) int32
-
-
-
-# Look at the data
-# batch_size = 3
-# captions, features, urls = sample_coco_minibatch(data, batch_size=batch_size)
-# for i, (caption, url) in enumerate(zip(captions, urls)):
-#     plt.imshow(image_from_url(url))
-#     plt.axis('off')
-#     caption_str = decode_captions(caption, data['idx_to_word'])
-#     plt.title(caption_str)
-#     plt.show()
-
-# greedy sampling
-# for split in ['train', 'val']:
-#     minibatch = sample_coco_minibatch(small_data, split=split, batch_size=1)
-#     gt_captions, features, urls = minibatch
-#     gt_captions = decode_captions(gt_captions, data['idx_to_word'])
-
-#     sample_captions = small_rnn_model.sample_greedily(features)
-#     sample_captions = decode_captions(sample_captions, data['idx_to_word'])
-
-#     for gt_caption, sample_caption, url in zip(gt_captions, sample_captions, urls):
-#         plt.imshow(image_from_url(url))
-#         plt.title('%s\n%s\nGT:%s' % (split, sample_caption, gt_caption))
-#         plt.axis('off')
-#         plt.show()
-
-
 
 
     # # Data loading code
@@ -106,8 +59,8 @@ import ipdb
     #     batch_size=args.batch_size, shuffle=False,
     #     num_workers=args.workers, pin_memory=True)~
 
-BATCHSIZE = 128
-HIDDEN_DIM = 512
+BATCHSIZE = 64
+HIDDEN_DIM = 768
 LEARNING_RATE = 1e-4
 EPOCH = 30
 device = torch.device("cuda")
@@ -245,7 +198,12 @@ def clean_sent(sent, pad_index=0, end_index=2, start_index=1):
 trn = pd.read_json("new_train.json", orient="records", lines=True)
 trn_loader = DataLoader(dataset=Data2(trn), batch_size=BATCHSIZE)
 
-model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, device=device)
+# Load pretrained embeddings
+embeds_file = h5py.File("embeddings.hdf5", "r")
+pre_embeds = np.array(embeds_file["embeds"], dtype=np.float32)
+embeds_file.close()
+
+model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, device=device, pretrained_embeds=pre_embeds)
 
 val = pd.read_json("test_val_small.json", orient="records", lines=True)
 val_loader = DataLoader(dataset=Data3(val), batch_size=BATCHSIZE)
@@ -257,12 +215,23 @@ model.to(device)
 
 # model = torch.nn.DataParallel(model)
 
-# TODO : Use BertAdam instead
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+# optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-# ipdb.set_trace()
+num_train_steps = len(trn) / BATCHSIZE * EPOCH
+
+# This optimizer code is taken, BertAdam included, from https://github.com/huggingface/transformers
+param_optimizer = list(model.named_parameters())
+no_decay = ['bias', 'gamma', 'beta']
+optimizer_grouped_parameters = [
+    {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
+    {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+]
+optimizer = BertAdam(optimizer_grouped_parameters,
+                     lr=LEARNING_RATE,
+                     warmup=0.1,
+                     t_total=num_train_steps)
+
 model.train()
-# model.eval()
 
 # losses = []
 # for features, captions, ids in trn_loader:
@@ -278,6 +247,7 @@ model.train()
 #     optimizer.step()
 #     model.zero_grad()
 
+print("Started Training") # TODO : tqdm here
 best_score = 0.0
 for i in range(EPOCH):
     iteration = 1

@@ -259,10 +259,15 @@ class TransformerModel(nn.Module):
 #         attn_vector = self.softmax(attn_vector)
 
 class TransformerModel2(nn.Module):
-    def __init__(self, hidden_dim=512, feature_dim=2048, head_count=8, batch_size=8, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, e_pdrop=0.1, device="cuda"):
+    def __init__(self, hidden_dim=512, feature_dim=2048, head_count=8, batch_size=8, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, e_pdrop=0.1, device="cuda", pretrained_embeds=[]):
         super(TransformerModel2, self).__init__()
 
         self.embed = nn.Embedding(vocab_size, hidden_dim)
+
+        # Load pretrained embeddings
+        if len(pretrained_embeds) > 0:
+            self.embed.weight = nn.Parameter(torch.from_numpy(pretrained_embeds))
+
         self.pos_embed = nn.Embedding(max_seq_len, hidden_dim)
         self.embed_dropout = nn.Dropout(p=e_pdrop)
 
