@@ -306,10 +306,15 @@ class TransformerModel2(nn.Module):
         self.device = device
 
     # TODO : Need to think about end_token and pad_tokens -> replace all end_tokens with pad_tokens -> We don't actually need to do this?
-    def forward(self, filenames, captions=[]):
+    def forward(self, filenames, captions=[], orders=[], generate=1):
 
-        image_features = torch.cat([get_image(filename, self.scaler, self.totensor, self.normalize) for filename in filenames], axis=0).to(self.device)
-        image_features = self.get_features(image_features)
+        if len(orders) == 0:
+            orders = torch.cat([torch.arange(self.max_seq_len, dtype=torch.long, device=self.device).unsqueeze(0) for _ in range(len(filenames))], dim=0)
+
+        # TODO : Moving to device might be bad since this happens multiple times when using multi-GPU. Might consider moving these outside to train.py
+
+        # image_features = torch.cat([get_image(filename, self.scaler, self.totensor, self.normalize) for filename in filenames], axis=0).to(self.device)
+        image_features = self.get_features(filenames)
 
         # image = image.permute(0,3,1,2)
         image_features = self.pool(image_features) # Bx2048x4x4
@@ -318,14 +323,12 @@ class TransformerModel2(nn.Module):
         image_features = image_features.reshape(len(filenames), self.max_seq_len, -1) # BxSxH
         # image_features = self.encode(image_features) # Making sure sizes match -> TODO : consider this
 
-        if len(captions) > 0: # In training
+        if generate == 1: # In training
             y = captions[:,1:]
             x = captions[:,:-1]
-            generate = 1
         else: # In testing
             captions = torch.full((len(filenames), self.max_seq_len), self.pad_token, dtype=torch.long, device=self.device)
             captions[:,0] = self.start_token
-            generate = self.max_seq_len
             x = copy.copy(captions)
             predictions = np.full((len(filenames), self.max_seq_len), self.pad_token)
 
@@ -339,7 +342,7 @@ class TransformerModel2(nn.Module):
             padded_mask[pads] = -10000
             self_attn_mask = self_attn_mask + padded_mask # -10000 and -20000 do not differ when their exp is taken, so no problem here
 
-            x = self.embed(x) + self.pos_embed(torch.cat([torch.arange(self.max_seq_len, dtype=torch.long, device=self.device).unsqueeze(0) for _ in range(len(filenames))], dim=0))
+            x = self.embed(x) + self.pos_embed(orders)
             x = self.embed_dropout(x)
 
             x = self.decoder(image_features, x, self_attn_mask, padded_mask)
