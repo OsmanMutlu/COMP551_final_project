@@ -62,6 +62,7 @@ import ipdb
     #     num_workers=args.workers, pin_memory=True)~
 
 BATCHSIZE = 512
+VAL_BATCHSIZE = 64
 HIDDEN_DIM = 768
 LEARNING_RATE = 1e-4
 EPOCH = 30
@@ -219,14 +220,16 @@ pre_embeds = np.array(embeds_file["embeds"], dtype=np.float32)
 embeds_file.close()
 
 model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=4, device=device, pretrained_embeds=pre_embeds)
+val_model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=VAL_BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=4, device=device, pretrained_embeds=pre_embeds)
 
 val = pd.read_json("test_val_small.json", orient="records", lines=True)
-val_loader = DataLoader(dataset=Data3(val), batch_size=BATCHSIZE)
+val_loader = DataLoader(dataset=Data3(val), batch_size=VAL_BATCHSIZE)
 
 # coco_val = COCO("coco-caption/annotations/captions_val_small2014.json")
 
 # model.load_state_dict(torch.load("model.pt"))
 model.to(device)
+val_model.to(device)
 
 model = torch.nn.DataParallel(model)
 
@@ -268,6 +271,7 @@ normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                       std=[0.229, 0.224, 0.225])
 
 orders = torch.cat([torch.arange(MAX_SEQ_LEN, dtype=torch.long, device=device).unsqueeze(0) for _ in range(BATCHSIZE)], dim=0)
+val_orders = torch.cat([torch.arange(MAX_SEQ_LEN, dtype=torch.long, device=device).unsqueeze(0) for _ in range(VAL_BATCHSIZE)], dim=0)
 
 print("Started Training") # TODO : tqdm here
 best_score = 0.0
@@ -290,22 +294,23 @@ for i in range(EPOCH):
         optimizer.step()
         model.zero_grad()
 
-        if iteration % 2 == 0:
+        if iteration % 100 == 0:
             all_meteor = 0
-            model.eval()
+            val_model.load_state_dict(model.module.state_dict())
+            val_model.eval()
             # result_json = []
             for ids in val_loader:
 
+                # print("HERE")
                 ids = ids.squeeze(1)
                 filenames = [val[val.id == a.item()].iloc[0].filename for a in ids]
                 captions = [val[val.id == a.item()].iloc[0].captions for a in ids]
                 filenames = [val_folder_path + filename for filename in filenames]
-                ipdb.set_trace()
                 image_features = torch.cat([get_image(filename, scaler, totensor, normalize) for filename in filenames], axis=0).to(device)
-                if len(image_features) == BATCHSIZE:
-                    pred_captions = model(image_features, generate=MAX_SEQ_LEN, orders=orders)
+                if len(image_features) == VAL_BATCHSIZE:
+                    pred_captions = val_model(image_features, generate=MAX_SEQ_LEN, orders=val_orders)
                 else:
-                    pred_captions = model(image_features, generate=MAX_SEQ_LEN)
+                    pred_captions = val_model(image_features, generate=MAX_SEQ_LEN)
 
                 pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
                 # result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
@@ -339,8 +344,8 @@ for i in range(EPOCH):
 
             if curr_score > best_score:
                 best_score = curr_score
-                model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-                torch.save(model.state_dict(), "model2.pt")
+                model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
+                torch.save(model_to_save.state_dict(), "model.pt")
 
 
     print("Epoch " + str(i+1))
@@ -349,7 +354,8 @@ for i in range(EPOCH):
 
     all_meteor = 0
     # result_json = []
-    model.eval()
+    val_model.load_state_dict(model.module.state_dict())
+    val_model.eval()
     for ids in val_loader:
 
         ids = ids.squeeze(1)
@@ -357,10 +363,10 @@ for i in range(EPOCH):
         captions = [val[val.id == a.item()].iloc[0].captions for a in ids]
         filenames = [val_folder_path + filename for filename in filenames]
         image_features = torch.cat([get_image(filename, scaler, totensor, normalize) for filename in filenames], axis=0).to(device)
-        if len(image_features) == BATCHSIZE:
-            pred_captions = model(image_features, generate=MAX_SEQ_LEN, orders=orders)
+        if len(image_features) == VAL_BATCHSIZE:
+            pred_captions = val_model(image_features, generate=MAX_SEQ_LEN, orders=val_orders)
         else:
-            pred_captions = model(image_features, generate=MAX_SEQ_LEN)
+            pred_captions = val_model(image_features, generate=MAX_SEQ_LEN)
 
         pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
         # result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
@@ -392,7 +398,7 @@ for i in range(EPOCH):
     if curr_score > best_score:
         best_score = curr_score
         model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-        torch.save(model.state_dict(), "model2.pt")
+        torch.save(model.state_dict(), "model.pt")
 
     # all_bleu = 0
     # model.eval()

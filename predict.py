@@ -114,8 +114,10 @@ EPOCH = 30
 MAX_SEQ_LEN = 16
 device = torch.device("cuda")
 train_folder_path = "dataset2/train2014/"
-val_folder_path = "dataset2/test2014/"
-result_file = "new_test_results.json"
+val_folder_path = "dataset2/val2014/"
+test_folder_path = "dataset2/test2014/"
+result_file = "test_val_small_results.json"
+# result_file = "new_test_results.json"
 
 # class Data(Dataset):
 #     """"""
@@ -262,9 +264,10 @@ def clean_sent(sent, pad_index=0, end_index=2):
 
 model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, device=device)
 
-# val = pd.read_json("test_val_small.json", orient="records", lines=True)
-val = pd.read_json("new_test.json", orient="records", lines=True)
+val = pd.read_json("test_val_small.json", orient="records", lines=True)
+# val = pd.read_json("new_test.json", orient="records", lines=True)
 val_loader = DataLoader(dataset=Data3(val), batch_size=BATCHSIZE)
+
 # coco_val = COCO("coco_caption/annotations/captions_val2014.json")
 
 model.load_state_dict(torch.load("model.pt"))
@@ -303,6 +306,7 @@ for ids in val_loader:
     ids = ids.squeeze(1)
     filenames = [val[val.id == a.item()].iloc[0].filename for a in ids]
     filenames = [val_folder_path + filename for filename in filenames]
+    # filenames = [test_folder_path + filename for filename in filenames]
     image_features = torch.cat([get_image(filename, scaler, totensor, normalize) for filename in filenames], axis=0).to(device)
     if len(filenames) == BATCHSIZE:
         pred_captions = model(image_features, orders=orders, generate=MAX_SEQ_LEN)

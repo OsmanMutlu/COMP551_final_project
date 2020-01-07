@@ -356,8 +356,15 @@ class TransformerModel2(nn.Module):
 
                 predictions[:,i] = curr_preds.cpu().numpy()
 
+
         if generate == 1: # In training
             loss = self.criterion(x.view(-1, self.vocab_size), y.reshape(-1))
+            probs = nn.functional.softmax(x, dim=2)
+            pred_over_timesteps = torch.sum(probs, dim=1) - 1
+            reg_loss = torch.sum(pred_over_timesteps[pred_over_timesteps > 0])
+            loss += reg_loss
             return loss
         else: # In testing
+            # print("HERE1 : " + str(len(predictions)))
+            # print(predictions.shape)
             return predictions # predictions
