@@ -61,7 +61,7 @@ import ipdb
     #     batch_size=args.batch_size, shuffle=False,
     #     num_workers=args.workers, pin_memory=True)~
 
-BATCHSIZE = 512
+BATCHSIZE = 1024
 VAL_BATCHSIZE = 64
 HIDDEN_DIM = 768
 LEARNING_RATE = 1e-4
@@ -219,8 +219,8 @@ embeds_file = h5py.File("embeddings.hdf5", "r")
 pre_embeds = np.array(embeds_file["embeds"], dtype=np.float32)
 embeds_file.close()
 
-model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=4, device=device, pretrained_embeds=pre_embeds)
-val_model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=VAL_BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=4, device=device, pretrained_embeds=pre_embeds)
+model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=8, device=device, pretrained_embeds=pre_embeds)
+val_model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=VAL_BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=8, device=device, pretrained_embeds=pre_embeds)
 
 val = pd.read_json("test_val_small.json", orient="records", lines=True)
 val_loader = DataLoader(dataset=Data3(val), batch_size=VAL_BATCHSIZE)

@@ -167,7 +167,7 @@ class DecoderSubLayer(nn.Module):
 # Coded the decoder ourselves
 # For fine details, like where to put dropout, We checked Osman's julia implementation at https://github.com/OsmanMutlu/BERT.jl/blob/master/src/model.jl
 class Decoder(nn.Module):
-    def __init__(self, hidden_dim, ff_hidden_dim, head_dim, head_count=8, n_layer=4, max_seq_len=16):
+    def __init__(self, hidden_dim, ff_hidden_dim, head_dim, head_count=8, n_layer=8, max_seq_len=16):
         super(Decoder, self).__init__()
 
         layer = DecoderSubLayer(hidden_dim, ff_hidden_dim, head_dim, head_count=head_count)
@@ -311,7 +311,15 @@ class TransformerModel2(nn.Module):
         if len(orders) == 0:
             orders = torch.cat([torch.arange(self.max_seq_len, dtype=torch.long, device=self.device).unsqueeze(0) for _ in range(len(filenames))], dim=0)
 
-        # TODO : Moving to device might be bad since this happens multiple times when using multi-GPU. Might consider moving these outside to train.py
+        self_attn_mask = torch.triu(torch.full((len(filenames), self.max_seq_len, self.max_seq_len), -10000, dtype=torch.long, device=self.device), 1) # BxSxS
+        # TODO : Find a nicer way to do this
+        padded_mask = torch.zeros((len(filenames), self.max_seq_len, self.max_seq_len), dtype=torch.long, device=self.device)
+        pads = x == self.pad_token
+        padded_mask[pads] = -10000
+        padded_mask = padded_mask.transpose(1,2)
+        padded_mask[pads] = -10000
+        self_attn_mask = self_attn_mask + padded_mask # -10000 and -20000 do not differ when their exp is taken, so no problem here
+
 
         # image_features = torch.cat([get_image(filename, self.scaler, self.totensor, self.normalize) for filename in filenames], axis=0).to(self.device)
         image_features = self.get_features(filenames)
@@ -333,14 +341,6 @@ class TransformerModel2(nn.Module):
             predictions = np.full((len(filenames), self.max_seq_len), self.pad_token)
 
         for i in range(generate): # When training only traversed once
-            self_attn_mask = torch.triu(torch.full((len(filenames), self.max_seq_len, self.max_seq_len), -10000, dtype=torch.long, device=self.device), 1) # BxSxS
-            # TODO : Find a nicer way to do this
-            padded_mask = torch.zeros((len(filenames), self.max_seq_len, self.max_seq_len), dtype=torch.long, device=self.device)
-            pads = x == self.pad_token
-            padded_mask[pads] = -10000
-            padded_mask = padded_mask.transpose(1,2)
-            padded_mask[pads] = -10000
-            self_attn_mask = self_attn_mask + padded_mask # -10000 and -20000 do not differ when their exp is taken, so no problem here
 
             x = self.embed(x) + self.pos_embed(orders)
             x = self.embed_dropout(x)
@@ -349,6 +349,7 @@ class TransformerModel2(nn.Module):
             x = self.proj(x) # scores
 
             if generate > 1: # In testing
+                # TODO : decode better -> at least prevent predicting same word again
                 curr_preds = x.argmax(dim=2)[:,i]
                 if i < self.max_seq_len - 1:
                     captions[:,i+1] = curr_preds # next input is this timestep's prediction
@@ -359,12 +360,10 @@ class TransformerModel2(nn.Module):
 
         if generate == 1: # In training
             loss = self.criterion(x.view(-1, self.vocab_size), y.reshape(-1))
-            probs = nn.functional.softmax(x, dim=2)
-            pred_over_timesteps = torch.sum(probs, dim=1) - 1
-            reg_loss = torch.sum(pred_over_timesteps[pred_over_timesteps > 0])
-            loss += reg_loss
+            # probs = nn.functional.softmax(x, dim=2)
+            # pred_over_timesteps = torch.sum(probs, dim=1) - 1
+            # reg_loss = torch.sum(pred_over_timesteps[pred_over_timesteps > 0]) # TODO : Might want to take mean
+            # loss += reg_loss
             return loss
         else: # In testing
-            # print("HERE1 : " + str(len(predictions)))
-            # print(predictions.shape)
-            return predictions # predictions
+            return predictions

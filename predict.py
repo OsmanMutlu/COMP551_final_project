@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from model import TransformerModel, TransformerModel2
 import h5py
-from nltk.translate.bleu_score import sentence_bleu
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 import torchvision.transforms as transforms
 from PIL import Image
@@ -116,8 +116,9 @@ device = torch.device("cuda")
 train_folder_path = "dataset2/train2014/"
 val_folder_path = "dataset2/val2014/"
 test_folder_path = "dataset2/test2014/"
-result_file = "test_val_small_results.json"
+# result_file = "test_train_small_results.json"
 # result_file = "new_test_results.json"
+result_file = "new_val_test_results2.json"
 
 # class Data(Dataset):
 #     """"""
@@ -262,9 +263,9 @@ def clean_sent(sent, pad_index=0, end_index=2):
 # trn = pd.read_json("new_train.json", orient="records", lines=True)
 # trn_loader = DataLoader(dataset=Data2(trn), batch_size=BATCHSIZE)
 
-model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=4, device=device)
+model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=8, device=device)
 
-val = pd.read_json("test_val_small.json", orient="records", lines=True)
+val = pd.read_json("new_val_test.json", orient="records", lines=True)
 # val = pd.read_json("new_test.json", orient="records", lines=True)
 val_loader = DataLoader(dataset=Data3(val), batch_size=BATCHSIZE)
 
@@ -299,11 +300,15 @@ normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
 
 orders = torch.cat([torch.arange(MAX_SEQ_LEN, dtype=torch.long, device=device).unsqueeze(0) for _ in range(BATCHSIZE)], dim=0)
 
+cc = SmoothingFunction()
+all_meteor = 0.0
+all_bleu = 0.0
 result_json = []
 model.eval()
 for ids in val_loader:
 
     ids = ids.squeeze(1)
+    captions = [val[val.id == a.item()].iloc[0].captions for a in ids]
     filenames = [val[val.id == a.item()].iloc[0].filename for a in ids]
     filenames = [val_folder_path + filename for filename in filenames]
     # filenames = [test_folder_path + filename for filename in filenames]
@@ -316,6 +321,12 @@ for ids in val_loader:
     pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
     result_json.extend([{"image_id":image_id.item(),"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
 
+    for j,refs in enumerate(captions):
+        all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
+        all_bleu += sentence_bleu([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j], smoothing_function=cc.method4) # ref[1:] -> ignore start index
+
+print("Meteor : %.4f" %(all_meteor / len(val)))
+print("Bleu : %.4f" %(all_bleu / len(val)))
 
 with open(result_file, "w") as f:
     json.dump(result_json, f)
