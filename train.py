@@ -12,6 +12,7 @@ from nltk.translate.meteor_score import meteor_score
 from optim import BertAdam
 import torchvision.transforms as transforms
 from PIL import Image
+from bleu_scorer import BleuScorer
 
 import ipdb
 
@@ -61,16 +62,17 @@ import ipdb
     #     batch_size=args.batch_size, shuffle=False,
     #     num_workers=args.workers, pin_memory=True)~
 
-BATCHSIZE = 1024
+BATCHSIZE = 512
 VAL_BATCHSIZE = 64
 HIDDEN_DIM = 768
 LEARNING_RATE = 1e-4
 EPOCH = 30
 MAX_SEQ_LEN = 16
-device = torch.device("cuda")
+device = torch.device("cuda:1")
 train_folder_path = "dataset2/train2014/"
 val_folder_path = "dataset2/val2014/"
-# result_file = "test_val_small_results.json"
+result_file = "reg_16_test_val_small_results.json"
+model_name = "reg_16_model.pt"
 
 # class Data(Dataset):
 #     """"""
@@ -122,8 +124,9 @@ class Data1(Dataset):
 
 class Data2(Dataset):
     """"""
-    def __init__(self, df):
+    def __init__(self, df, pad_token=0):
         self.df = df
+        self.pad_token = pad_token
 
     def __len__(self):
         return len(self.df)
@@ -131,7 +134,7 @@ class Data2(Dataset):
     def __getitem__(self, idx):
         ex = self.df.iloc[idx]
 
-        captions = torch.LongTensor(ex.captions)
+        captions = torch.LongTensor(ex.captions + [self.pad_token] * (MAX_SEQ_LEN - 16))
         ids = torch.LongTensor([ex.id])
         # input_mask = torch.tensor(feats.input_mask, dtype=torch.long)
 
@@ -228,10 +231,10 @@ val_loader = DataLoader(dataset=Data3(val), batch_size=VAL_BATCHSIZE)
 # coco_val = COCO("coco-caption/annotations/captions_val_small2014.json")
 
 # model.load_state_dict(torch.load("model.pt"))
-model.to(device)
 val_model.to(device)
 
-model = torch.nn.DataParallel(model)
+model = torch.nn.DataParallel(model, device_ids=[1,2,3])
+model.to(device)
 
 # optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
@@ -295,10 +298,10 @@ for i in range(EPOCH):
         model.zero_grad()
 
         if iteration % 100 == 0:
-            all_meteor = 0
             val_model.load_state_dict(model.module.state_dict())
             val_model.eval()
-            # result_json = []
+            result_json = []
+            bleu_scorer = BleuScorer(n=4)
             for ids in val_loader:
 
                 # print("HERE")
@@ -313,13 +316,16 @@ for i in range(EPOCH):
                     pred_captions = val_model(image_features, generate=MAX_SEQ_LEN)
 
                 pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
-                # result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
+                result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip([a.item() for a in ids], pred_sentences)])
 
                 for j,refs in enumerate(captions):
-                    all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
+                    bleu_scorer += (pred_sentences[j], [get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs])
+                    # all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
 
-            # with open(result_file, "w") as f:
-            #     json.dump(result_json, f)
+            curr_score, _ = bleu_scorer.compute_score(option='closest', verbose=0)
+
+            with open(result_file, "w") as f:
+                json.dump(result_json, f)
 
             # coco_val_res = coco.loadRes(result_file)
             # coco_eval = COCOEvalCap(coco_val, coco_val_res)
@@ -337,7 +343,8 @@ for i in range(EPOCH):
             #     print('%s: %.3f'%(metric, score))
 
             # curr_score = sum(curr_scores)/len(curr_scores)
-            curr_score = all_meteor / len(val)
+            print(curr_score)
+            curr_score = sum(curr_score) / 4
             print("Overal score : %.4f" %curr_score)
             print("***")
 
@@ -345,15 +352,17 @@ for i in range(EPOCH):
             if curr_score > best_score:
                 best_score = curr_score
                 model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-                torch.save(model_to_save.state_dict(), "model.pt")
+                torch.save(model_to_save.state_dict(), model_name)
+
+            model.train()
 
 
     print("Epoch " + str(i+1))
     print("Loss : %.4f" %(sum(losses)/len(losses)))
 
 
-    all_meteor = 0
-    # result_json = []
+    bleu_scorer = BleuScorer(n=4)
+    result_json = []
     val_model.load_state_dict(model.module.state_dict())
     val_model.eval()
     for ids in val_loader:
@@ -369,13 +378,16 @@ for i in range(EPOCH):
             pred_captions = val_model(image_features, generate=MAX_SEQ_LEN)
 
         pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
-        # result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
+        result_json.extend([{"image_id":image_id,"caption":caption} for image_id, caption in zip([a.item() for a in ids], pred_sentences)])
 
         for j,refs in enumerate(captions):
-            all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
+            bleu_scorer += (pred_sentences[j], [get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs])
+            # all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
 
-    # with open(result_file, "w") as f:
-    #     json.dump(result_json, f)
+    curr_score, _ = bleu_scorer.compute_score(option='closest', verbose=0)
+
+    with open(result_file, "w") as f:
+        json.dump(result_json, f)
 
 
     # coco_val_res = coco.loadRes(result_file)
@@ -390,7 +402,8 @@ for i in range(EPOCH):
     #     print('%s: %.3f' %(metric, score))
 
     # curr_score = sum(curr_scores)/len(curr_scores)
-    curr_score = all_meteor / len(val)
+    print(curr_score)
+    curr_score = sum(curr_score) / 4
     print("Overal score : %.4f" %curr_score)
     print("------------------------------")
 
@@ -398,7 +411,7 @@ for i in range(EPOCH):
     if curr_score > best_score:
         best_score = curr_score
         model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-        torch.save(model.state_dict(), "model.pt")
+        torch.save(model.state_dict(), model_name)
 
     # all_bleu = 0
     # model.eval()

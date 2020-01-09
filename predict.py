@@ -9,9 +9,9 @@ from torch.utils.data import Dataset, DataLoader
 from model import TransformerModel, TransformerModel2
 import h5py
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.translate.meteor_score import meteor_score
 import torchvision.transforms as transforms
 from PIL import Image
+from bleu_scorer import BleuScorer
 
 import ipdb
 
@@ -107,18 +107,18 @@ import ipdb
     #     batch_size=args.batch_size, shuffle=False,
     #     num_workers=args.workers, pin_memory=True)~
 
-BATCHSIZE = 64
+BATCHSIZE = 32
 HIDDEN_DIM = 768
 LEARNING_RATE = 1e-4
 EPOCH = 30
-MAX_SEQ_LEN = 16
-device = torch.device("cuda")
+MAX_SEQ_LEN = 49
+device = torch.device("cuda:1")
 train_folder_path = "dataset2/train2014/"
 val_folder_path = "dataset2/val2014/"
 test_folder_path = "dataset2/test2014/"
-# result_file = "test_train_small_results.json"
+result_file = "test_val_small_results.json"
 # result_file = "new_test_results.json"
-result_file = "new_val_test_results2.json"
+# result_file = "new_val_test_results2.json"
 
 # class Data(Dataset):
 #     """"""
@@ -263,15 +263,15 @@ def clean_sent(sent, pad_index=0, end_index=2):
 # trn = pd.read_json("new_train.json", orient="records", lines=True)
 # trn_loader = DataLoader(dataset=Data2(trn), batch_size=BATCHSIZE)
 
-model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=16, n_layer=8, device=device)
+model = TransformerModel2(hidden_dim=HIDDEN_DIM, feature_dim=2048, head_count=8, batch_size=BATCHSIZE, vocab_size=1004, start_token=1, end_token=2, pad_token=0, unk_token=3, max_seq_len=MAX_SEQ_LEN, n_layer=8, device=device)
 
-val = pd.read_json("new_val_test.json", orient="records", lines=True)
+val = pd.read_json("test_val_small.json", orient="records", lines=True)
 # val = pd.read_json("new_test.json", orient="records", lines=True)
 val_loader = DataLoader(dataset=Data3(val), batch_size=BATCHSIZE)
 
 # coco_val = COCO("coco_caption/annotations/captions_val2014.json")
 
-model.load_state_dict(torch.load("model.pt"))
+model.load_state_dict(torch.load("latest_model_49.pt"))
 model.to(device)
 
 
@@ -300,9 +300,7 @@ normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
 
 orders = torch.cat([torch.arange(MAX_SEQ_LEN, dtype=torch.long, device=device).unsqueeze(0) for _ in range(BATCHSIZE)], dim=0)
 
-cc = SmoothingFunction()
-all_meteor = 0.0
-all_bleu = 0.0
+bleu_scorer = BleuScorer(n=4)
 result_json = []
 model.eval()
 for ids in val_loader:
@@ -319,17 +317,19 @@ for ids in val_loader:
         pred_captions = model(image_features, generate=MAX_SEQ_LEN)
 
     pred_sentences = [get_sent_from_vocab(clean_sent(sent)) for sent in pred_captions]
-    result_json.extend([{"image_id":image_id.item(),"caption":caption} for image_id, caption in zip(ids, pred_sentences)])
+    result_json.extend([{"image_id":image_id.item(),"caption":caption, "true_cap":get_sent_from_vocab(clean_sent(refs[0][1:]))} for image_id, caption, refs in zip(ids, pred_sentences, captions)])
 
     for j,refs in enumerate(captions):
-        all_meteor += meteor_score([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j]) # ref[1:] -> ignore start index
-        all_bleu += sentence_bleu([get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs], pred_sentences[j], smoothing_function=cc.method4) # ref[1:] -> ignore start index
+        bleu_scorer += (pred_sentences[j], [get_sent_from_vocab(clean_sent(ref[1:])) for ref in refs])
 
-print("Meteor : %.4f" %(all_meteor / len(val)))
-print("Bleu : %.4f" %(all_bleu / len(val)))
+curr_score, _ = bleu_scorer.compute_score(option='closest', verbose=0)
+
+print(curr_score)
+print("Bleu : %.4f" %(sum(curr_score) / 4))
 
 with open(result_file, "w") as f:
     json.dump(result_json, f)
+
 
 # coco_val_res = coco_val.loadRes(result_file)
 # coco_eval = COCOEvalCap(coco_val, coco_val_res)

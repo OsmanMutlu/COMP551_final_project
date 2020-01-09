@@ -9,3 +9,4 @@ coco_utils.py
 __init__.py
 *.pt
 *.log
+\#*\#

@@ -308,25 +308,18 @@ class TransformerModel2(nn.Module):
     # TODO : Need to think about end_token and pad_tokens -> replace all end_tokens with pad_tokens -> We don't actually need to do this?
     def forward(self, filenames, captions=[], orders=[], generate=1):
 
+        if generate == 1:
+            self.device = torch.cuda.current_device()
+
         if len(orders) == 0:
             orders = torch.cat([torch.arange(self.max_seq_len, dtype=torch.long, device=self.device).unsqueeze(0) for _ in range(len(filenames))], dim=0)
 
-        self_attn_mask = torch.triu(torch.full((len(filenames), self.max_seq_len, self.max_seq_len), -10000, dtype=torch.long, device=self.device), 1) # BxSxS
-        # TODO : Find a nicer way to do this
-        padded_mask = torch.zeros((len(filenames), self.max_seq_len, self.max_seq_len), dtype=torch.long, device=self.device)
-        pads = x == self.pad_token
-        padded_mask[pads] = -10000
-        padded_mask = padded_mask.transpose(1,2)
-        padded_mask[pads] = -10000
-        self_attn_mask = self_attn_mask + padded_mask # -10000 and -20000 do not differ when their exp is taken, so no problem here
-
-
         # image_features = torch.cat([get_image(filename, self.scaler, self.totensor, self.normalize) for filename in filenames], axis=0).to(self.device)
-        image_features = self.get_features(filenames)
+        image_features = self.get_features(filenames) # Bx2048x7x7
 
-        # image = image.permute(0,3,1,2)
         image_features = self.pool(image_features) # Bx2048x4x4
-        image_features = self.linear(image_features.permute(0,2,3,1)) # Bx4x4xH
+        image_features = self.linear(image_features.permute(0,2,3,1)) # Bx4x4xH or Bx7x7xH
+
         # TODO : Trying 2d attention
         image_features = image_features.reshape(len(filenames), self.max_seq_len, -1) # BxSxH
         # image_features = self.encode(image_features) # Making sure sizes match -> TODO : consider this
@@ -340,7 +333,16 @@ class TransformerModel2(nn.Module):
             x = copy.copy(captions)
             predictions = np.full((len(filenames), self.max_seq_len), self.pad_token)
 
-        for i in range(generate): # When training only traversed once
+        self_attn_mask = torch.triu(torch.full((len(filenames), self.max_seq_len, self.max_seq_len), -10000, dtype=torch.long, device=self.device), 1) # BxSxS
+        # TODO : Find a nicer way to do this
+        padded_mask = torch.zeros((len(filenames), self.max_seq_len, self.max_seq_len), dtype=torch.long, device=self.device)
+        pads = x == self.pad_token
+        padded_mask[pads] = -10000
+        padded_mask = padded_mask.transpose(1,2)
+        padded_mask[pads] = -10000
+        self_attn_mask = self_attn_mask + padded_mask # -10000 and -20000 do not differ when their exp is taken, so no problem here
+
+        for i in range(min(generate, 16)): # When training only traversed once
 
             x = self.embed(x) + self.pos_embed(orders)
             x = self.embed_dropout(x)
@@ -357,13 +359,25 @@ class TransformerModel2(nn.Module):
 
                 predictions[:,i] = curr_preds.cpu().numpy()
 
+                # sorted_x = torch.argsort(x, dim=-1, descending=True)
+                # for g, idxs in enumerate(sorted_x[:,i,:]):
+                #     for j in range(self.vocab_size):
+                #         if idxs[j].item() not in predictions[g,:]: # It is not predicted before
+                #             predictions[g,i] = idxs[j].item()
+                #             break
+
+                # if i < self.max_seq_len - 1:
+                #     captions[:,i+1] = torch.LongTensor(predictions[:,i]).to(self.device) # next input is this timestep's prediction
+                #     x = copy.copy(captions)
+
+
 
         if generate == 1: # In training
             loss = self.criterion(x.view(-1, self.vocab_size), y.reshape(-1))
-            # probs = nn.functional.softmax(x, dim=2)
-            # pred_over_timesteps = torch.sum(probs, dim=1) - 1
-            # reg_loss = torch.sum(pred_over_timesteps[pred_over_timesteps > 0]) # TODO : Might want to take mean
-            # loss += reg_loss
+            probs = nn.functional.softmax(x, dim=2)
+            pred_over_timesteps = torch.sum(probs, dim=1) - 1
+            reg_loss = torch.mean(pred_over_timesteps[pred_over_timesteps > 0]) # TODO : Might want to take sum
+            loss += reg_loss
             return loss
         else: # In testing
             return predictions
